@@ -1,6 +1,5 @@
 #!/bin/bash
-# CometAI Server Startup Script
-# Simple script to start the CometAI server with proper environment setup
+# CometAI Self-Hosted Server Startup Script
 
 set -e
 
@@ -10,8 +9,8 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}🚀 Starting CometAI Server${NC}"
-echo "=========================="
+echo -e "${GREEN}🏠 Starting CometAI Self-Hosted Server${NC}"
+echo "====================================="
 
 # Check if Python is available
 if ! command -v python3 &> /dev/null; then
@@ -34,16 +33,13 @@ echo "Installing dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Set environment variables for production
-export ENVIRONMENT=production
-export HOST=0.0.0.0
-export PORT=8080
-export LOG_LEVEL=INFO
+# Get local IP for network access
+LOCAL_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "localhost")
 
-# Create logs directory
-mkdir -p logs
-
-echo -e "${GREEN}✅ Starting CometAI server on http://0.0.0.0:8080${NC}"
+echo -e "${GREEN}✅ Starting CometAI server...${NC}"
+echo -e "${YELLOW}Local access: http://localhost:8080${NC}"
+echo -e "${YELLOW}Network access: http://${LOCAL_IP}:8080${NC}"
+echo ""
 echo "Press Ctrl+C to stop the server"
 echo ""
 

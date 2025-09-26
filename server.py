@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
 """
-CometAI Production Web Server
+CometAI Self-Hosted Server
 
-Production-ready FastAPI server for hosting LocalLLM as a web service.
-Designed for deployment on cloud platforms with proper error handling,
-logging, and process management.
+Simple FastAPI server for self-hosting LocalLLM.
+Designed for local/home hosting with minimal configuration.
 """
 
 import asyncio
 import json
 import logging
-import os
-import signal
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import yaml
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, status
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -36,35 +31,13 @@ except ImportError as e:
     print("Make sure all required dependencies are installed.")
     sys.exit(1)
 
-# Configure production logging
-def setup_logging():
-    """Setup production-grade logging"""
-    log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    log_format = '%(asctime)s | %(levelname)s | %(name)s | %(message)s'
-    
-    # Create logs directory if it doesn't exist
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    # Configure logging with file rotation
-    logging.basicConfig(
-        level=getattr(logging, log_level),
-        format=log_format,
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_dir / "cometai_server.log"),
-        ]
-    )
-    
-    # Reduce noise from external libraries
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("transformers").setLevel(logging.WARNING)
-    logging.getLogger("torch").setLevel(logging.WARNING)
-    
-    return logging.getLogger(__name__)
-
-logger = setup_logging()
+# Simple logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # Pydantic models for API
 class ChatMessage(BaseModel):
@@ -93,20 +66,11 @@ class ModelInfo(BaseModel):
     quantization: str
     uptime: str
 
-class ServerConfig(BaseModel):
-    host: str = Field(default="0.0.0.0", description="Host to bind to")
-    port: int = Field(default=8080, ge=1, le=65535, description="Port to bind to")
-    enable_cors: bool = Field(default=True, description="Enable CORS")
-    max_concurrent_requests: int = Field(default=4, ge=1, le=100, description="Max concurrent requests")
-    debug: bool = Field(default=False, description="Debug mode")
-    allowed_hosts: List[str] = Field(default=["*"], description="Allowed hosts")
-
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
     model_loading: bool
     uptime: str
-    memory_usage: Optional[Dict[str, Any]] = None
     timestamp: str
 
 class ConnectionManager:
@@ -148,20 +112,18 @@ class ConnectionManager:
             self.disconnect(client_id)
 
 class CometAIServer:
-    """Production-ready server class"""
+    """Simple self-hosted server class"""
     
     def __init__(self, config_path: Optional[str] = None):
         self.config = self.load_config(config_path)
         self.llm: Optional[LocalLLM] = None
         self.start_time = datetime.now()
         
-        # Create FastAPI app with production settings
+        # Create FastAPI app
         self.app = FastAPI(
-            title="CometAI Production Server",
-            description="Production-ready Local LLM API Server",
-            version="1.0.0",
-            docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
-            redoc_url="/redoc" if os.getenv("ENVIRONMENT") != "production" else None,
+            title="CometAI Self-Hosted Server",
+            description="Local LLM API Server for Self-Hosting",
+            version="1.0.0"
         )
         
         self.connection_manager = ConnectionManager()
@@ -171,16 +133,12 @@ class CometAIServer:
         self.model_loading = False
         self.model_loaded = False
         self.model_error = None
-        self.shutdown_event = asyncio.Event()
         
         # Setup middleware
         self.setup_middleware()
         
         # Setup routes
         self.setup_routes()
-        
-        # Setup signal handlers for graceful shutdown
-        self.setup_signal_handlers()
     
     def load_config(self, config_path: Optional[str] = None) -> Dict:
         """Load server configuration"""
@@ -203,55 +161,15 @@ class CometAIServer:
             }
     
     def setup_middleware(self):
-        """Setup production middleware"""
-        api_config = self.config.get('api', {})
-        
-        # Trusted host middleware for security
-        allowed_hosts = api_config.get('allowed_hosts', ["*"])
-        if os.getenv("ENVIRONMENT") == "production" and "*" in allowed_hosts:
-            logger.warning("Using wildcard hosts in production is not recommended")
-        
+        """Setup simple CORS middleware"""
+        # Enable CORS for self-hosting
         self.app.add_middleware(
-            TrustedHostMiddleware, 
-            allowed_hosts=allowed_hosts
+            CORSMiddleware,
+            allow_origins=["*"],  # Allow all origins for self-hosting
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
-        
-        # CORS middleware
-        if api_config.get('enable_cors', True):
-            cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
-            self.app.add_middleware(
-                CORSMiddleware,
-                allow_origins=cors_origins,
-                allow_credentials=True,
-                allow_methods=["GET", "POST", "PUT", "DELETE"],
-                allow_headers=["*"],
-            )
-    
-    def setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown"""
-        def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-            self.shutdown_event.set()
-        
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-    
-    def get_memory_usage(self) -> Dict[str, Any]:
-        """Get current memory usage statistics"""
-        try:
-            import psutil
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            return {
-                "rss": memory_info.rss,
-                "vms": memory_info.vms,
-                "percent": process.memory_percent(),
-                "available": psutil.virtual_memory().available
-            }
-        except ImportError:
-            return {"error": "psutil not available"}
-        except Exception as e:
-            return {"error": str(e)}
     
     def setup_routes(self):
         """Setup API routes"""
@@ -280,16 +198,14 @@ class CometAIServer:
         
         @self.app.get("/health", response_model=HealthResponse)
         async def health_check():
-            """Comprehensive health check endpoint"""
+            """Simple health check endpoint"""
             uptime = str(datetime.now() - self.start_time)
-            memory_usage = self.get_memory_usage()
             
             return HealthResponse(
                 status="healthy" if self.model_loaded else "loading" if self.model_loading else "error",
                 model_loaded=self.model_loaded,
                 model_loading=self.model_loading,
                 uptime=uptime,
-                memory_usage=memory_usage,
                 timestamp=datetime.now().isoformat()
             )
         
@@ -332,42 +248,29 @@ class CometAIServer:
         
         @self.app.post("/api/chat", response_model=ChatResponse)
         async def chat_endpoint(request: ChatRequest):
-            """Chat endpoint for REST API with rate limiting and error handling"""
+            """Simple chat endpoint"""
             if not self.model_loaded:
                 if self.model_error:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                        detail=f"Model failed to load: {self.model_error}"
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
-                    detail="Model is still loading"
-                )
+                    raise HTTPException(status_code=500, detail=f"Model failed to load: {self.model_error}")
+                raise HTTPException(status_code=503, detail="Model is still loading")
             
             try:
                 # Convert Pydantic models to dict for LocalLLM
                 history = [msg.dict() for msg in request.conversation_history] if request.conversation_history else []
                 
-                # Log request (without sensitive data)
-                logger.info(f"Chat request: {len(request.message)} chars, {len(history)} history items")
-                
-                # Generate response with timeout
-                start_time = datetime.now()
+                # Generate response
                 response = self.llm.chat(
                     request.message,
                     conversation_history=history,
                     max_tokens=request.max_tokens or 512,
                     temperature=request.temperature or 0.7
                 )
-                generation_time = (datetime.now() - start_time).total_seconds()
                 
-                # Estimate tokens used (rough approximation)
+                # Estimate tokens used
                 tokens_used = len(response.split()) * 1.3
                 
                 # Get model info
                 model_info = self.llm.get_model_info()
-                
-                logger.info(f"Chat response generated in {generation_time:.2f}s, ~{int(tokens_used)} tokens")
                 
                 return ChatResponse(
                     response=response,
@@ -377,11 +280,8 @@ class CometAIServer:
                 )
                 
             except Exception as e:
-                logger.error(f"Chat error: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                    detail=f"Chat generation failed: {str(e)}"
-                )
+                logger.error(f"Chat error: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.websocket("/ws/{client_id}")
         async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -561,80 +461,47 @@ class CometAIServer:
                 "typing": False
             })
     
-    async def graceful_shutdown(self):
-        """Perform graceful shutdown"""
-        logger.info("Starting graceful shutdown...")
+    def cleanup(self):
+        """Simple cleanup on shutdown"""
+        logger.info("Cleaning up resources...")
         
-        # Close all WebSocket connections
+        # Close WebSocket connections
         if self.connection_manager.active_connections:
-            logger.info(f"Closing {len(self.connection_manager.active_connections)} WebSocket connections")
-            for client_id in list(self.connection_manager.active_connections.keys()):
-                try:
-                    await self.connection_manager.send_message(client_id, {
-                        "type": "server_shutdown",
-                        "message": "Server is shutting down"
-                    })
-                except:
-                    pass
-                self.connection_manager.disconnect(client_id)
+            logger.info(f"Closing {len(self.connection_manager.active_connections)} connections")
         
-        # Clean up model resources
-        if self.llm:
-            logger.info("Cleaning up model resources...")
-            try:
-                # Clear CUDA cache if available
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except:
-                pass
+        # Clear GPU memory if available
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except:
+            pass
         
-        logger.info("Graceful shutdown completed")
+        logger.info("Cleanup completed")
     
-    def run(self, host: Optional[str] = None, port: Optional[int] = None, debug: Optional[bool] = None):
-        """Run the production server"""
+    def run(self, host: Optional[str] = None, port: Optional[int] = None):
+        """Run the self-hosted server"""
         api_config = self.config.get('api', {})
         
-        # Use environment variables or config (Railway/Render compatible)
-        server_host = host or os.getenv("HOST", "0.0.0.0")
-        server_port = port or int(os.getenv("PORT", api_config.get('port', 8080)))
-        server_debug = debug or os.getenv("DEBUG", "false").lower() == "true"
+        server_host = host or api_config.get('host', '0.0.0.0')
+        server_port = port or api_config.get('port', 8080)
         
-        # Production settings
-        workers = int(os.getenv("WORKERS", 1))  # Single worker for model consistency
-        
-        logger.info(f"🚀 Starting CometAI Production Server")
+        logger.info(f"🚀 Starting CometAI Self-Hosted Server")
         logger.info(f"   Host: {server_host}")
         logger.info(f"   Port: {server_port}")
-        logger.info(f"   Workers: {workers}")
-        logger.info(f"   Debug: {server_debug}")
-        logger.info(f"   Environment: {os.getenv('ENVIRONMENT', 'development')}")
-        
-        # Configure uvicorn for production
-        config = uvicorn.Config(
-            app=self.app,
-            host=server_host,
-            port=server_port,
-            log_level="info",
-            access_log=True,
-            workers=workers,
-            loop="asyncio",
-            reload=server_debug and workers == 1,
-            # Production optimizations
-            backlog=2048,
-            timeout_keep_alive=30,
-            timeout_graceful_shutdown=30,
-        )
-        
-        server = uvicorn.Server(config)
+        logger.info(f"   Access: http://{server_host}:{server_port}")
         
         try:
-            server.run()
+            uvicorn.run(
+                self.app,
+                host=server_host,
+                port=server_port,
+                log_level="info"
+            )
         except KeyboardInterrupt:
-            logger.info("Received interrupt signal")
+            logger.info("Server stopped by user")
         finally:
-            # Ensure graceful shutdown
-            asyncio.run(self.graceful_shutdown())
+            self.cleanup()
 
 def main():
     """Main function"""
